@@ -23,6 +23,7 @@ use {
     },
 };
 
+#[repr(C)]
 pub struct UdpPool {
     connections: Vec<Arc<Udp>>,
 }
@@ -57,6 +58,7 @@ impl ConnectionPool for UdpPool {
     }
 }
 
+#[repr(C)]
 pub struct UdpConfig {
     udp_socket: Arc<UdpSocket>,
 }
@@ -84,6 +86,7 @@ impl NewConnectionConfig for UdpConfig {
     }
 }
 
+#[repr(C)]
 pub struct Udp(Arc<UdpSocket>);
 impl BaseClientConnection for Udp {
     type BlockingClientConnection = BlockingUdpConnection;
@@ -110,6 +113,7 @@ impl BaseClientConnection for Udp {
 }
 
 #[derive(Default)]
+#[repr(C)]
 pub struct UdpConnectionManager {}
 
 impl ConnectionManager for UdpConnectionManager {
