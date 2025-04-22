@@ -40,7 +40,6 @@ use {
     solana_unified_scheduler_pool::{BankingStageHelper, DefaultSchedulerPool},
     std::{
         num::NonZeroUsize,
-        ops::Deref,
         sync::{Arc, RwLock},
     },
 };
@@ -58,19 +57,17 @@ pub(crate) fn ensure_banking_stage_setup(
     let root_bank = bank_forks.read().unwrap().sharable_root_bank();
     let unified_receiver = channels.unified_receiver().clone();
 
-    let (is_exited, decision_maker) = {
+    let (is_exited, mut decision_maker) = {
+        let decision_maker = DecisionMaker::from(poh_recorder);
         let poh_recorder = poh_recorder.read().unwrap();
-        (
-            poh_recorder.is_exited.clone(),
-            DecisionMaker::from(poh_recorder.deref()),
-        )
+        (poh_recorder.is_exited.clone(), decision_maker)
     };
 
     let banking_stage_monitor =
         Box::new(DecisionMakerWrapper::new(is_exited, decision_maker.clone()));
     let banking_packet_handler = Box::new(
         move |helper: &BankingStageHelper, batches: BankingPacketBatch| {
-            let decision = decision_maker.make_consume_or_forward_decision();
+            let (decision, _, _) = decision_maker.make_consume_or_forward_decision();
             if matches!(decision, BufferedPacketsDecision::Forward) {
                 // discard newly-arriving packets. note that already handled packets (thus buffered
                 // by scheduler internally) will be discarded as well via BankingStageMonitor api

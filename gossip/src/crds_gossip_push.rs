@@ -54,6 +54,7 @@ const CRDS_GOSSIP_PRUNE_MIN_INGRESS_NODES: usize = 2;
 const CRDS_GOSSIP_PUSH_ACTIVE_SET_SIZE: usize = CRDS_GOSSIP_PUSH_FANOUT + 3;
 const CONFIG_REFRESH_INTERVAL_MS: u64 = 60_000;
 
+#[repr(C)]
 pub struct CrdsGossipPush {
     /// Active set of validators for push
     active_set: RwLock<PushActiveSet>,
