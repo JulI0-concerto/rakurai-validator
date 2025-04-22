@@ -49,4 +49,5 @@ pub struct ConsumeWork<Tx> {
 pub struct FinishedConsumeWork<Tx> {
     pub work: ConsumeWork<Tx>,
     pub retryable_indexes: Vec<RetryableIndex>,
+    pub cu_err_indexes: Option<(Vec<usize>, Vec<usize>)>,
 }

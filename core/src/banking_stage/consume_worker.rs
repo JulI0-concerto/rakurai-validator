@@ -119,7 +119,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             .num_messages_processed
             .fetch_add(1, Ordering::Relaxed);
 
-        let output = self.consumer.process_and_record_aged_transactions(
+        let (output, cu_err_indexes) = self.consumer.process_and_record_aged_transactions(
             bank,
             &work.transactions,
             &work.max_ages,
@@ -134,6 +134,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             retryable_indexes: output
                 .execute_and_commit_transactions_output
                 .retryable_transaction_indexes,
+            cu_err_indexes,
         })?;
         Ok(ProcessingStatus::Processed)
     }
@@ -170,6 +171,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         self.consumed_sender.send(FinishedConsumeWork {
             work,
             retryable_indexes,
+            cu_err_indexes: None,
         })?;
         Ok(())
     }
@@ -373,10 +375,11 @@ pub(crate) mod external {
                     Some(&self.bundle_account_locker),
                 );
 
-                self.metrics.update_for_consume(&output);
+                self.metrics.update_for_consume(&output.0);
                 self.metrics.has_data.store(true, Ordering::Relaxed);
 
                 let Ok(commit_results) = output
+                    .0
                     .execute_and_commit_transactions_output
                     .commit_transactions_result
                 else {
@@ -1076,6 +1079,7 @@ fn backoff(idle_duration: Duration, sleep_duration: &Duration) -> Duration {
 /// These are atomic, and intended to be reported by the scheduling thread
 /// since the consume worker thread is sleeping unless there is work to be
 /// done.
+#[repr(C)]
 pub struct ConsumeWorkerMetrics {
     id: String,
     interval: AtomicInterval,
@@ -1325,6 +1329,7 @@ impl ConsumeWorkerMetrics {
     }
 }
 
+#[repr(C)]
 struct ConsumeWorkerCountMetrics {
     max_queue_len: AtomicU64,
     num_messages_processed: AtomicU64,
@@ -1415,6 +1420,7 @@ impl ConsumeWorkerCountMetrics {
 }
 
 #[derive(Default)]
+#[repr(C)]
 struct ConsumeWorkerTimingMetrics {
     cost_model_us: AtomicU64,
     load_execute_us: AtomicU64,
@@ -1474,6 +1480,7 @@ impl ConsumeWorkerTimingMetrics {
 }
 
 #[derive(Default)]
+#[repr(C)]
 struct ConsumeWorkerTransactionErrorMetrics {
     total: AtomicUsize,
     account_in_use: AtomicUsize,
@@ -1708,6 +1715,7 @@ mod tests {
             None,
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
+            None,
         );
         let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
         let shared_leader_state = SharedLeaderState::new(0, None, None);

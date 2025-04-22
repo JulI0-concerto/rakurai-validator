@@ -1,7 +1,9 @@
 //! The `validator` module hosts all the validator microservices.
 
+use crate::banking_stage::reward_distributor::RewardDistributionConfig;
 use crate::tip_manager::TipManagerConfig;
 pub use solana_perf::report_target_features;
+
 use {
     crate::{
         admin_rpc_post_init::{AdminRpcRequestMetadataPostInit, KeyUpdaterType, KeyUpdaters},
@@ -394,6 +396,11 @@ pub struct ValidatorConfig {
     pub shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     pub shred_retransmit_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     pub tip_manager_config: TipManagerConfig,
+    pub reward_distribution_config: RewardDistributionConfig,
+    pub banking_packet_delay_ms: u64,
+    pub target_slot_adjustment_ms: u64,
+    pub tx_io_check: Option<String>,
+    pub oms_connector: bool,
 }
 
 impl ValidatorConfig {
@@ -481,6 +488,11 @@ impl ValidatorConfig {
             shred_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
             shred_retransmit_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
             tip_manager_config: TipManagerConfig::default(),
+            reward_distribution_config: RewardDistributionConfig::default(),
+            banking_packet_delay_ms: 200,
+            target_slot_adjustment_ms: 10,
+            tx_io_check: None,
+            oms_connector: false,
         }
     }
 
@@ -1035,6 +1047,7 @@ impl Validator {
                 &leader_schedule_cache,
                 &genesis_config.poh_config,
                 exit.clone(),
+                config.target_slot_adjustment_ms * 1_000_000,
             )
         };
         let (record_sender, record_receiver) = record_channels(transaction_status_sender.is_some());
@@ -1453,6 +1466,7 @@ impl Validator {
             config.poh_hashes_per_batch,
             record_receiver,
             poh_service_message_receiver,
+            config.target_slot_adjustment_ms * 1_000_000,
         );
         assert_eq!(
             blockstore.get_new_shred_signals_len(),
@@ -1780,6 +1794,10 @@ impl Validator {
             config.relayer_config.clone(),
             config.tip_manager_config.clone(),
             config.shred_receiver_address.clone(),
+            config.reward_distribution_config.clone(),
+            config.banking_packet_delay_ms,
+            config.tx_io_check.clone(),
+            config.oms_connector,
         );
 
         datapoint_info!(
