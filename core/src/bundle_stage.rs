@@ -7,6 +7,7 @@ use {
             decision_maker::{BufferedPacketsDecision, DecisionMaker},
             qos_service::QosService,
         },
+        banking_trace::BankingPacketSender,
         bundle_stage::{
             bundle_account_locker::BundleAccountLocker, bundle_consumer::BundleConsumer,
             bundle_packet_receiver::BundleReceiver,
@@ -27,7 +28,6 @@ use {
     },
     solana_time_utils::AtomicInterval,
     std::{
-        ops::Deref,
         sync::{
             atomic::{AtomicBool, AtomicU64, Ordering},
             Arc, Mutex, RwLock,
@@ -44,7 +44,8 @@ mod bundle_packet_receiver;
 pub(crate) mod bundle_stage_leader_metrics;
 mod bundle_storage;
 mod committer;
-const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(40);
+
+const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(5);
 const SLOT_BOUNDARY_CHECK_PERIOD: Duration = Duration::from_millis(10);
 
 // Stats emitted periodically
@@ -209,6 +210,7 @@ impl BundleStage {
         bundle_account_locker: BundleAccountLocker,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
+        non_vote_sender: BankingPacketSender,
     ) -> Self {
         Self::start_bundle_thread(
             cluster_info,
@@ -224,6 +226,7 @@ impl BundleStage {
             MAX_BUNDLE_RETRY_DURATION,
             block_builder_fee_info,
             prioritization_fee_cache,
+            non_vote_sender,
         )
     }
 
@@ -246,6 +249,7 @@ impl BundleStage {
         max_bundle_retry_duration: Duration,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
+        non_vote_sender: BankingPacketSender,
     ) -> Self {
         const BUNDLE_STAGE_ID: u32 = 10_000;
         let poh_recorder = poh_recorder.clone();
@@ -258,7 +262,7 @@ impl BundleStage {
             replay_vote_sender,
             prioritization_fee_cache.clone(),
         );
-        let decision_maker = DecisionMaker::from(poh_recorder.read().unwrap().deref());
+        let decision_maker = DecisionMaker::from(&poh_recorder);
 
         let unprocessed_bundle_storage = BundleStorage::default();
 
@@ -283,6 +287,7 @@ impl BundleStage {
                     consumer,
                     BUNDLE_STAGE_ID,
                     unprocessed_bundle_storage,
+                    non_vote_sender,
                     exit,
                 );
             })
@@ -298,6 +303,7 @@ impl BundleStage {
         mut consumer: BundleConsumer,
         id: u32,
         mut bundle_storage: BundleStorage,
+        non_vote_sender: BankingPacketSender,
         exit: Arc<AtomicBool>,
     ) {
         let mut last_metrics_update = Instant::now();
@@ -326,6 +332,7 @@ impl BundleStage {
                 &mut bundle_storage,
                 &mut bundle_stage_metrics,
                 &mut bundle_stage_leader_metrics,
+                non_vote_sender.clone(),
             ) {
                 Ok(_) | Err(RecvTimeoutError::Timeout) => (),
                 Err(RecvTimeoutError::Disconnected) => break,
@@ -354,7 +361,7 @@ impl BundleStage {
         bundle_storage: &mut BundleStorage,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
     ) {
-        let (decision, make_decision_time_us) =
+        let ((decision, _, _), make_decision_time_us) =
             measure_us!(decision_maker.make_consume_or_forward_decision());
 
         let (metrics_action, banking_stage_metrics_action) =
@@ -366,7 +373,7 @@ impl BundleStage {
         match decision {
             // BufferedPacketsDecision::Consume means this leader is scheduled to be running at the moment.
             // Execute, record, and commit as many bundles possible given time, compute, and other constraints.
-            BufferedPacketsDecision::Consume(bank) => {
+            BufferedPacketsDecision::Consume(bank_start) => {
                 // Take metrics action before consume packets (potentially resetting the
                 // slot metrics tracker to the next slot) so that we don't count the
                 // packet processing metrics from the next slot towards the metrics
@@ -375,7 +382,11 @@ impl BundleStage {
                     .apply_action(metrics_action, banking_stage_metrics_action);
 
                 let (_, consume_buffered_packets_time_us) = measure_us!(consumer
-                    .consume_buffered_bundles(&bank, bundle_storage, bundle_stage_leader_metrics,));
+                    .consume_buffered_bundles(
+                        &bank_start.working_bank,
+                        bundle_storage,
+                        bundle_stage_leader_metrics,
+                    ));
                 bundle_stage_leader_metrics
                     .leader_slot_metrics_tracker()
                     .increment_consume_buffered_packets_us(consume_buffered_packets_time_us);
