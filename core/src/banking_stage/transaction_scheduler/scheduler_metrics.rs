@@ -11,8 +11,8 @@ use {
 
 #[derive(Default)]
 pub struct SchedulerCountMetrics {
-    interval: IntervalSchedulerCountMetrics,
-    slot: SlotSchedulerCountMetrics,
+    pub interval: IntervalSchedulerCountMetrics,
+    pub slot: SlotSchedulerCountMetrics,
 }
 
 impl SchedulerCountMetrics {
@@ -35,15 +35,15 @@ impl SchedulerCountMetrics {
 }
 
 #[derive(Default)]
-struct IntervalSchedulerCountMetrics {
+pub struct IntervalSchedulerCountMetrics {
     interval: AtomicInterval,
-    metrics: SchedulerCountMetricsInner,
+    pub metrics: SchedulerCountMetricsInner,
 }
 
 #[derive(Default)]
-struct SlotSchedulerCountMetrics {
+pub struct SlotSchedulerCountMetrics {
     slot: Option<Slot>,
-    metrics: SchedulerCountMetricsInner,
+    pub metrics: SchedulerCountMetricsInner,
 }
 
 #[derive(Default)]
@@ -217,7 +217,7 @@ impl SchedulerCountMetricsInner {
             || self.num_dropped_on_blacklisted_account != Saturating(0)
     }
 
-    fn reset(&mut self) {
+    pub fn reset(&mut self) {
         self.num_received = Saturating(0);
         self.num_buffered = Saturating(0);
         self.num_scheduled = Saturating(0);
@@ -274,8 +274,8 @@ impl SchedulerCountMetricsInner {
 
 #[derive(Default)]
 pub struct SchedulerTimingMetrics {
-    interval: IntervalSchedulerTimingMetrics,
-    slot: SlotSchedulerTimingMetrics,
+    pub interval: IntervalSchedulerTimingMetrics,
+    pub slot: SlotSchedulerTimingMetrics,
 }
 
 impl SchedulerTimingMetrics {
@@ -294,15 +294,15 @@ impl SchedulerTimingMetrics {
 }
 
 #[derive(Default)]
-struct IntervalSchedulerTimingMetrics {
+pub struct IntervalSchedulerTimingMetrics {
     interval: AtomicInterval,
-    metrics: SchedulerTimingMetricsInner,
+    pub metrics: SchedulerTimingMetricsInner,
 }
 
 #[derive(Default)]
-struct SlotSchedulerTimingMetrics {
+pub struct SlotSchedulerTimingMetrics {
     slot: Option<Slot>,
-    metrics: SchedulerTimingMetricsInner,
+    pub metrics: SchedulerTimingMetricsInner,
 }
 
 #[derive(Default)]
@@ -384,7 +384,7 @@ impl SchedulerTimingMetricsInner {
         solana_metrics::submit(datapoint, log::Level::Info);
     }
 
-    fn reset(&mut self) {
+    pub fn reset(&mut self) {
         self.decision_time_us = Saturating(0);
         self.receive_time_us = Saturating(0);
         self.buffer_time_us = Saturating(0);

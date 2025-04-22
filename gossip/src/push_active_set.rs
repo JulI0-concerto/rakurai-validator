@@ -81,6 +81,7 @@ fn gossip_interpolate_weight(base: u64, base_squared: u64, alpha: u64) -> u64 {
 //     min stake of { this node, crds value owner }
 // The entry represents set of gossip nodes to actively
 // push to for crds values belonging to the bucket.
+#[repr(C)]
 pub(crate) struct PushActiveSet {
     entries: [PushActiveSetEntry; NUM_PUSH_ACTIVE_SET_ENTRIES],
     mode: WeightingMode,
@@ -141,6 +142,7 @@ impl PushActiveSet {
 // Keys are gossip nodes to push messages to.
 // Values are which origins the node has pruned.
 #[derive(Default)]
+#[repr(C)]
 struct PushActiveSetEntry(IndexMap</*node:*/ Pubkey, /*origins:*/ ConcurrentBloom<Pubkey>>);
 
 impl PushActiveSet {
