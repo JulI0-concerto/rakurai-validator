@@ -1,6 +1,7 @@
 //! Control flow for BankingStage's transaction scheduler.
 //!
 
+use crate::banking_stage::{DecisionState, LeaderMetaData};
 use {
     super::{
         receive_and_buffer::{DisconnectedError, ReceiveAndBuffer},
@@ -29,6 +30,24 @@ use {
         },
     },
 };
+
+#[cfg(feature = "build_validator")]
+extern "C" {
+    #[allow(improper_ctypes)]
+    fn check_state(
+        is_priority_queue_empty: bool,
+        decision_state: &DecisionState,
+        in_flight_txns: bool,
+        block_reception: &mut bool,
+        is_switching_point_detected: bool,
+    );
+}
+
+#[cfg(feature = "build_validator")]
+extern "C" {
+    #[allow(improper_ctypes)]
+    fn initial_check_state_for_standard();
+}
 
 /// Controls packet and transaction flow into scheduler, and scheduling execution.
 pub(crate) struct SchedulerController<R, S>
@@ -87,6 +106,14 @@ where
     }
 
     pub fn run(mut self) -> Result<(), SchedulerError> {
+        #[allow(unused_mut)]
+        let mut block_reception = false;
+        #[cfg(feature = "build_validator")]
+        unsafe {
+            initial_check_state_for_standard();
+        };
+        #[cfg(feature = "build_validator")]
+        let mut decision_state: DecisionState;
         while !self.exit.load(Ordering::Relaxed) {
             // BufferedPacketsDecision is shared with legacy BankingStage, which will forward
             // packets. Initially, not renaming these decision variants but the actions taken
@@ -98,7 +125,8 @@ where
             // `Forward` will drop packets from the buffer instead of forwarding.
             // During receiving, since packets would be dropped from buffer anyway, we can
             // bypass sanitization and buffering and immediately drop the packets.
-            let (decision, decision_time_us) =
+            #[allow(unused_variables)]
+            let ((decision, is_switching_point_detected, _), decision_time_us) =
                 measure_us!(self.decision_maker.make_consume_or_forward_decision());
             self.timing_metrics.update(|timing_metrics| {
                 timing_metrics.decision_time_us += decision_time_us;
@@ -111,9 +139,26 @@ where
 
             self.receive_completed()?;
             self.process_transactions(&decision)?;
-            if self.receive_and_buffer_packets(&decision).is_err() {
-                break;
+            if !block_reception {
+                if self.receive_and_buffer_packets(&decision).is_err() {
+                    break;
+                }
             }
+
+            #[cfg(feature = "build_validator")]
+            {
+                decision_state = translate_decision_into_decision_state(&decision);
+                unsafe {
+                    check_state(
+                        self.container.is_empty(),
+                        &decision_state,
+                        self.scheduler.in_flight_txns(),
+                        &mut block_reception,
+                        is_switching_point_detected,
+                    );
+                };
+            }
+
             // Report metrics only if there is data.
             // Reset intervals when appropriate, regardless of report.
             let should_report = self.count_metrics.interval_has_data();
@@ -140,13 +185,18 @@ where
         decision: &BufferedPacketsDecision,
     ) -> Result<(), SchedulerError> {
         match decision {
-            BufferedPacketsDecision::Consume(bank) => {
+            BufferedPacketsDecision::Consume(bank_start) => {
                 let (scheduling_summary, schedule_time_us) = measure_us!(self.scheduler.schedule(
                     &mut self.container,
                     |txs, results| {
-                        Self::pre_graph_filter(txs, results, bank, MAX_PROCESSING_AGE)
+                        Self::pre_graph_filter(
+                            txs,
+                            results,
+                            &bank_start.working_bank,
+                            MAX_PROCESSING_AGE,
+                        )
                     },
-                    |_| PreLockFilterAction::AttemptToSchedule // no pre-lock filter for now
+                    |_| PreLockFilterAction::AttemptToSchedule, // no pre-lock filter for now
                 )?);
 
                 self.count_metrics.update(|count_metrics| {
@@ -305,9 +355,11 @@ where
         &mut self,
         decision: &BufferedPacketsDecision,
     ) -> Result<ReceivingStats, DisconnectedError> {
-        let receiving_stats = self
-            .receive_and_buffer
-            .receive_and_buffer_packets(&mut self.container, decision)?;
+        let receiving_stats = self.receive_and_buffer.receive_and_buffer_packets(
+            &mut self.container,
+            Some(decision),
+            None,
+        )?;
 
         self.count_metrics.update(|count_metrics| {
             let ReceivingStats {
@@ -338,8 +390,7 @@ where
             count_metrics.num_dropped_on_receive_fee_payer += *num_dropped_on_fee_payer;
             count_metrics.num_dropped_on_capacity += *num_dropped_on_capacity;
             count_metrics.num_buffered += *num_buffered;
-            count_metrics.num_dropped_on_blacklisted_account +=
-                *num_dropped_on_blacklisted_account;
+            count_metrics.num_dropped_on_blacklisted_account += *num_dropped_on_blacklisted_account;
         });
 
         self.timing_metrics.update(|timing_metrics| {
@@ -348,6 +399,21 @@ where
         });
 
         Ok(receiving_stats)
+    }
+}
+
+pub fn translate_decision_into_decision_state(decision: &BufferedPacketsDecision) -> DecisionState {
+    match decision {
+        BufferedPacketsDecision::Consume(bank_start) => {
+            let bank = &bank_start.working_bank;
+            DecisionState::Consume(LeaderMetaData {
+                slot: bank.slot(),
+                bank_creation_time: *bank_start.bank_creation_time,
+            })
+        }
+        BufferedPacketsDecision::ForwardAndHold => DecisionState::ForwardAndHold,
+        BufferedPacketsDecision::Forward => DecisionState::Forward,
+        BufferedPacketsDecision::Hold => DecisionState::Hold,
     }
 }
 
@@ -536,7 +602,7 @@ mod tests {
     fn test_receive_then_schedule<R: ReceiveAndBuffer>(
         scheduler_controller: &mut SchedulerController<R, impl Scheduler<R::Transaction>>,
     ) {
-        let decision = scheduler_controller
+        let (decision, _) = scheduler_controller
             .decision_maker
             .make_consume_or_forward_decision();
         assert!(matches!(decision, BufferedPacketsDecision::Consume(_)));
