@@ -1553,6 +1553,13 @@ fn main() {
                         .long("no-block-cost-limits")
                         .takes_value(false)
                         .help("Disable block cost limits effectively by setting them to the max"),
+                )
+                .arg(
+                    Arg::with_name("version")
+                        .long("version")
+                        .short("v")
+                        .takes_value(true)
+                        .help("TraceData Version: v2.2, v2.3"),
                 ),
         )
         .subcommand(
@@ -1839,7 +1846,9 @@ fn main() {
 
                     let mut process_options = parse_process_options(&ledger_path, arg_matches);
                     if arg_matches.is_present("enable_hash_overrides") {
-                        let banking_trace_events = load_banking_trace_events_or_exit(&ledger_path);
+                        let banking_trace_events = load_banking_trace_events_or_exit(
+                            &ledger_path
+                        );
                         process_options.hash_overrides =
                             Some(banking_trace_events.hash_overrides().clone());
                     }
@@ -2552,7 +2561,8 @@ fn main() {
                 ("simulate-block-production", Some(arg_matches)) => {
                     let mut process_options = parse_process_options(&ledger_path, arg_matches);
 
-                    let banking_trace_events = load_banking_trace_events_or_exit(&ledger_path);
+                    let banking_trace_events =
+                        load_banking_trace_events_or_exit(&ledger_path);
                     process_options.hash_overrides =
                         Some(banking_trace_events.hash_overrides().clone());
 
@@ -2590,9 +2600,11 @@ fn main() {
                         "block_production_method",
                         BlockProductionMethod
                     );
-                    let transaction_struct =
-                        value_t_or_exit!(arg_matches, "transaction_struct", TransactionStructure);
+                    // let transaction_struct =
+                    //     value_t_or_exit!(arg_matches, "transaction_struct", TransactionStructure);
 
+                    // TODO hardcoded SDK till we support tx view fully
+                    let transaction_struct = TransactionStructure::Sdk;
                     info!(
                         "Using: block-production-method: {block_production_method} \
                          transaction-structure: {transaction_struct}"

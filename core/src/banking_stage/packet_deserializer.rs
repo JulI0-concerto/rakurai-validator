@@ -20,9 +20,11 @@ pub struct ReceivePacketResults {
     pub packet_stats: PacketReceiverStats,
 }
 
+#[derive(Clone)]
+#[repr(C)]
 pub struct PacketDeserializer {
     /// Receiver for packet batches from sigverify stage
-    packet_batch_receiver: BankingPacketReceiver,
+    pub packet_batch_receiver: BankingPacketReceiver,
 }
 
 #[derive(Default, Debug, PartialEq)]
@@ -145,6 +147,26 @@ impl PacketDeserializer {
         Ok((num_packets_received, messages))
     }
 
+    pub fn generate_packet_indexes(packet_batch: &PacketBatch) -> (Vec<usize>, Vec<(usize, bool)>) {
+        let mut accepted = Vec::with_capacity(packet_batch.len());
+        let mut rejected = Vec::with_capacity(packet_batch.len());
+
+        for (index, pkt) in packet_batch.iter().enumerate() {
+            if pkt.meta().discard() {
+                if pkt.meta().is_duplicate() {
+                    rejected.push((index, true));
+                } else {
+                    rejected.push((index, false));
+                }
+            } else {
+                accepted.push(index);
+            }
+        }
+
+        (accepted, rejected)
+    }
+
+    #[allow(dead_code)]
     pub(crate) fn deserialize_packets_for_unified_scheduler(
         packet_batch: &PacketBatch,
     ) -> impl Iterator<Item = (ImmutableDeserializedPacket, usize, usize)> + '_ {
