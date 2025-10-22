@@ -55,7 +55,7 @@ jobs:
           run: |
             TAR_NAME="${{ github.ref_name }}_${{ matrix.os }}.tar.gz"
             mkdir -p release
-            tar -cvzf $TAR_NAME target/release/librakurai_scheduler_1_0.so
+            tar -cvzf $TAR_NAME -C target/release librakurai_scheduler_1_0.so
 
         - name: Copy binary to Backend
           env:
@@ -89,3 +89,7 @@ jobs:
               "cd ${BACKEND_PATH}/ && ./deploy_binaries.sh '${{ github.ref_name }}'"
 
             shred -u backend_key.pem
+
+        - name: Run objdump verification
+          run: ./test_objdump_no_io.sh
+          
