@@ -3,7 +3,7 @@ name: Rakurai Scheduler Binary Attestation
 on:
     push:
         tags:
-            - "*"
+            - "**"
 
 env:
   CARGO_TERM_COLOR: always
