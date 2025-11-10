@@ -20,6 +20,7 @@ use {
         },
         bam_dependencies::BamDependencies,
         proxy::block_engine_stage::BlockBuilderFeeInfo,
+        banking_trace::BankingPacketSender,
     },
     jito_protos::proto::{
         bam_api::ConfigResponse,
@@ -77,6 +78,7 @@ impl BamManager {
         dependencies: BamDependencies,
         poh_recorder: Arc<RwLock<PohRecorder>>,
         identity_notifiers: Arc<RwLock<KeyUpdaters>>,
+        non_vote_sender: BankingPacketSender,
     ) -> Self {
         Self {
             thread: std::thread::spawn(move || {
@@ -86,6 +88,7 @@ impl BamManager {
                     dependencies,
                     poh_recorder,
                     identity_notifiers,
+                    non_vote_sender,
                 )
             }),
         }
@@ -97,6 +100,7 @@ impl BamManager {
         dependencies: BamDependencies,
         poh_recorder: Arc<RwLock<PohRecorder>>,
         identity_notifiers: Arc<RwLock<KeyUpdaters>>,
+        non_vote_sender: BankingPacketSender,
     ) {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(8)
@@ -138,6 +142,7 @@ impl BamManager {
                         dependencies.cluster_info.clone(),
                         dependencies.batch_sender.clone(),
                         dependencies.outbound_receiver.clone(),
+                        non_vote_sender.clone(),
                     ));
                     match result {
                         Ok(connection) => {
@@ -205,7 +210,7 @@ impl BamManager {
             // Check if block builder info has changed
             if let Some(builder_config) = connection.get_latest_config() {
                 if Some(&builder_config) != cached_builder_config.as_ref() {
-                    Self::update_tpu_config(Some(&builder_config), &dependencies.cluster_info);
+                    // Self::update_tpu_config(Some(&builder_config), &dependencies.cluster_info);
                     Self::update_block_engine_key_and_commission(
                         Some(&builder_config),
                         &dependencies.block_builder_fee_info,
@@ -244,6 +249,7 @@ impl BamManager {
         }
     }
 
+    #[allow(dead_code)]
     fn get_sockaddr(info: Option<&Socket>) -> Option<SocketAddr> {
         let info = info?;
         let Socket { ip, port } = info;
@@ -253,6 +259,7 @@ impl BamManager {
         )))
     }
 
+    #[allow(dead_code)]
     fn update_tpu_config(config: Option<&ConfigResponse>, cluster_info: &Arc<ClusterInfo>) {
         let Some(tpu_info) = config.and_then(|c| c.bam_config.as_ref()) else {
             return;

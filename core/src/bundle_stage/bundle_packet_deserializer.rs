@@ -2,6 +2,7 @@
 
 use {
     crate::{
+        banking_trace::BankingPacketSender,
         immutable_deserialized_bundle::{DeserializedBundleError, ImmutableDeserializedBundle},
         packet_bundle::PacketBundle,
     },
@@ -46,6 +47,7 @@ impl BundlePacketDeserializer {
     /// Handles receiving bundles and deserializing them
     pub fn receive_bundles(
         &self,
+        non_vote_sender: BankingPacketSender,
         recv_timeout: Duration,
         capacity: usize,
     ) -> Result<ReceiveBundleResults, RecvTimeoutError> {
@@ -56,6 +58,7 @@ impl BundlePacketDeserializer {
             bundle_count,
             &mut bundles,
             self.max_packets_per_bundle,
+            non_vote_sender,
         ))
     }
 
@@ -65,12 +68,13 @@ impl BundlePacketDeserializer {
         bundle_count: Saturating<usize>,
         bundles: &mut [PacketBundle],
         max_packets_per_bundle: Option<usize>,
+        non_vote_sender: BankingPacketSender,
     ) -> ReceiveBundleResults {
         let mut deserialized_bundles = Vec::with_capacity(bundle_count.0);
         let mut num_dropped_bundles = Saturating(0);
 
         for bundle in bundles.iter_mut() {
-            match Self::deserialize_bundle(bundle, max_packets_per_bundle) {
+            match Self::deserialize_bundle(bundle, max_packets_per_bundle, &non_vote_sender) {
                 Ok(deserialized_bundle) => {
                     deserialized_bundles.push(deserialized_bundle);
                 }
@@ -125,8 +129,9 @@ impl BundlePacketDeserializer {
     pub fn deserialize_bundle(
         bundle: &mut PacketBundle,
         max_packets_per_bundle: Option<usize>,
+        non_vote_sender: &BankingPacketSender,
     ) -> Result<ImmutableDeserializedBundle, DeserializedBundleError> {
-        ImmutableDeserializedBundle::new(bundle, max_packets_per_bundle)
+        ImmutableDeserializedBundle::new(bundle, max_packets_per_bundle, non_vote_sender)
     }
 }
 

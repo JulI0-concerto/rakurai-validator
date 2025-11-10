@@ -1,5 +1,8 @@
+use std::num::Saturating;
+
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
+
 use {
     super::{
         scheduler::{PreLockFilterAction, Scheduler, SchedulingSummary},
@@ -10,6 +13,7 @@ use {
         thread_aware_account_locks::{ThreadAwareAccountLocks, ThreadId, ThreadSet, TryLockError},
     },
     crate::banking_stage::{
+        decision_maker::BufferedPacketsDecision,
         consumer::TARGET_NUM_TRANSACTIONS_PER_BATCH,
         read_write_account_set::ReadWriteAccountSet,
         scheduler_messages::{ConsumeWork, FinishedConsumeWork},
@@ -25,7 +29,6 @@ use {
     solana_pubkey::Pubkey,
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
     solana_svm_transaction::svm_message::SVMMessage,
-    std::num::Saturating,
 };
 
 #[inline(always)]
@@ -341,8 +344,40 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
         })
     }
 
+    fn receive_completed(
+        &mut self,
+        container: &mut impl StateContainer<Tx>,
+        _decision: &BufferedPacketsDecision,
+    ) -> Result<(usize, usize), SchedulerError> {
+        let mut total_num_transactions = Saturating::<usize>(0);
+        let mut total_num_retryable = Saturating::<usize>(0);
+        loop {
+            let (num_transactions, num_retryable) = self
+                .scheduling_common_mut()
+                .try_receive_completed(container)?;
+            if num_transactions == 0 {
+                break;
+            }
+            total_num_transactions += num_transactions;
+            total_num_retryable += num_retryable;
+        }
+        let Saturating(total_num_transactions) = total_num_transactions;
+        let Saturating(total_num_retryable) = total_num_retryable;
+        Ok((total_num_transactions, total_num_retryable))
+    }
+
     fn scheduling_common_mut(&mut self) -> &mut SchedulingCommon<Tx> {
         &mut self.common
+    }
+
+    // returns if txns are in flight
+    fn in_flight_txns(&mut self) -> bool {
+        !self
+            .scheduling_common_mut()
+            .in_flight_tracker
+            .num_in_flight_per_thread()
+            .iter()
+            .all(|txns_count| *txns_count == 0)
     }
 }
 

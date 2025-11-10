@@ -34,6 +34,7 @@ impl FetchStageState {
         }
     }
 
+    #[allow(dead_code)]
     fn reset_to_bam_state(&mut self) {
         self.fetch_connected = false;
         self.heartbeat_received = false;
@@ -120,6 +121,7 @@ impl FetchStageManager {
         packet_intercept_rx: Receiver<PacketBatch>,
         packet_tx: Sender<PacketBatch>,
         exit: Arc<AtomicBool>,
+        #[allow(unused_variables)]
         bam_enabled: Arc<AtomicBool>,
         my_fallback_contact_info: contact_info::ContactInfo,
     ) -> JoinHandle<()> {
@@ -136,19 +138,21 @@ impl FetchStageManager {
             let mut heartbeats_received = 0;
             while !exit.load(Ordering::Relaxed) {
                 // BAM override: When BAM is enabled, bypass all normal operation
-                if bam_enabled.load(Ordering::Relaxed) {
-                    state.reset_to_bam_state();
-                    // Drain any queued packets to prevent buildup
-                    while packet_intercept_rx.try_recv().is_ok() {}
-                    std::thread::sleep(Duration::from_millis(100));
-                    continue;
-                }
+                // if bam_enabled.load(Ordering::Relaxed) {
+                //     state.reset_to_bam_state();
+                //     // Drain any queued packets to prevent buildup
+                //     while packet_intercept_rx.try_recv().is_ok() {}
+                //     std::thread::sleep(Duration::from_millis(100));
+                //     continue;
+                // }
 
                 select! {
                     recv(packet_intercept_rx) -> pkt => {
                         match pkt {
-                            Ok(pkt) => {
-                                // Only forward packets when fetch stage is "connected"
+                            Ok(mut pkt) => {
+                                for mut packet in pkt.iter_mut() {
+                                    packet.meta_mut().set_delay(true);
+                                }
                                 if state.fetch_connected {
                                     if packet_tx.send(pkt).is_err() {
                                         error!("{:?}", ProxyError::PacketForwardError);
@@ -170,10 +174,10 @@ impl FetchStageManager {
                         }
                         // If no heartbeat received and we're in a state that needs fallback
                         if state.needs_fallback_reconnect() {
-                            if bam_enabled.load(Ordering::Relaxed) {
-                                state.reset_to_bam_state();
-                                continue;
-                            }
+                            // if bam_enabled.load(Ordering::Relaxed) {
+                            //     state.reset_to_bam_state();
+                            //     continue;
+                            // }
                             warn!("heartbeat late, reconnecting fetch stage");
                             // Switch to "connected" mode (forward packets) and use validator's TPU
                             state.switch_to_connected_mode();
@@ -199,10 +203,10 @@ impl FetchStageManager {
                                 state.set_to_pending_disconnect();
                             }
                             if state.should_disconnect_to_relayer(&pending_disconnect_ts) {
-                                if bam_enabled.load(Ordering::Relaxed) {
-                                    state.reset_to_bam_state();
-                                    continue;
-                                }
+                                // if bam_enabled.load(Ordering::Relaxed) {
+                                //     state.reset_to_bam_state();
+                                //     continue;
+                                // }
                                 info!("disconnecting fetch stage");
                                 state.switch_to_disconnected_mode();
                                 if let Err(e) = Self::set_tpu_addresses(&cluster_info, tpu_addr, tpu_forward_addr) {
