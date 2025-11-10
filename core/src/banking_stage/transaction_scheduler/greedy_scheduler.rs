@@ -1,5 +1,8 @@
+use std::num::Saturating;
+
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
+
 use {
     super::{
         scheduler::{PreLockFilterAction, Scheduler, SchedulingSummary},
@@ -20,7 +23,6 @@ use {
     crossbeam_channel::{Receiver, Sender},
     solana_cost_model::block_cost_limits::MAX_BLOCK_UNITS,
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
-    std::num::Saturating,
 };
 
 #[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
@@ -224,6 +226,16 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
             num_filtered_out: 0,
             filter_time_us: 0,
         })
+    }
+
+    // returns if txns are in flight
+    fn in_flight_txns(&mut self) -> bool {
+        !self
+            .scheduling_common_mut()
+            .in_flight_tracker
+            .num_in_flight_per_thread()
+            .iter()
+            .all(|txns_count| *txns_count == 0)
     }
 
     fn scheduling_common_mut(&mut self) -> &mut SchedulingCommon<Tx> {

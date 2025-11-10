@@ -17,7 +17,9 @@ use {
     solana_core::{
         admin_rpc_post_init::AdminRpcRequestMetadataPostInit,
         consensus::tower_storage::TowerStorage,
-        validator::{Validator, ValidatorConfig, ValidatorStartProgress, ValidatorTpuConfig},
+        validator::{
+            ClientMode, Validator, ValidatorConfig, ValidatorStartProgress, ValidatorTpuConfig,
+        },
     },
     solana_epoch_schedule::EpochSchedule,
     solana_fee_calculator::FeeRateGovernor,
@@ -140,6 +142,7 @@ pub struct TestValidatorGenesis {
     pub geyser_plugin_manager: Arc<RwLock<GeyserPluginManager>>,
     admin_rpc_service_post_init: Arc<RwLock<Option<AdminRpcRequestMetadataPostInit>>>,
     pub bam_url: Arc<Mutex<Option<String>>>,
+    pub client_mode: Arc<Mutex<ClientMode>>,
 }
 
 impl Default for TestValidatorGenesis {
@@ -177,6 +180,7 @@ impl Default for TestValidatorGenesis {
             admin_rpc_service_post_init:
                 Arc::<RwLock<Option<AdminRpcRequestMetadataPostInit>>>::default(),
             bam_url: Arc::new(Mutex::new(None)),
+            client_mode: Arc::new(Mutex::new(ClientMode::default())),
         }
     }
 }

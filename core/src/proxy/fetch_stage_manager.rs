@@ -1,23 +1,33 @@
 use {
-    crate::proxy::{HeartbeatEvent, ProxyError},
-    crossbeam_channel::{select, tick, Receiver, Sender},
+    crate::{proxy::{HeartbeatEvent, ProxyError}, validator::ClientMode},
+    crossbeam_channel::{Receiver, Sender, select, tick},
+    log::{error, info, warn},
+    serde::Deserialize,
     solana_client::connection_cache::Protocol,
     solana_gossip::{cluster_info::ClusterInfo, contact_info},
     solana_perf::packet::PacketBatch,
     std::{
-        net::SocketAddr,
+        collections::HashSet,
+        env,
+        fs::File,
+        io::Read,
+        net::{IpAddr, SocketAddr},
+        path::{Path, PathBuf},
         sync::{
-            atomic::{AtomicBool, Ordering},
-            Arc,
+            Arc, Mutex, RwLock, atomic::{AtomicBool, Ordering}
         },
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},
     },
 };
 
+
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_millis(1500); // Empirically determined from load testing
 const DISCONNECT_DELAY: Duration = Duration::from_secs(60);
 const METRICS_CADENCE: Duration = Duration::from_secs(1);
+const CONFIG_RELOAD_INTERVAL: Duration = Duration::from_secs(1800); // Reload config every 30 minutes
+const DEFAULT_QUIC_CONFIG_PATH: &str = "../quic_config.json";
+const QUIC_CONFIG_PATH_ENV: &str = "QUIC_CONFIG_PATH";
 
 struct FetchStageState {
     fetch_connected: bool,
@@ -34,6 +44,7 @@ impl FetchStageState {
         }
     }
 
+    #[allow(dead_code)]
     fn reset_to_bam_state(&mut self) {
         self.fetch_connected = false;
         self.heartbeat_received = false;
@@ -88,6 +99,7 @@ impl FetchStageManager {
         exit: Arc<AtomicBool>,
         bam_enabled: Arc<AtomicBool>,
         my_fallback_contact_info: contact_info::ContactInfo,
+        client_mode: Arc<Mutex<ClientMode>>,
     ) -> Self {
         let t_hdl = Self::start(
             cluster_info,
@@ -97,6 +109,7 @@ impl FetchStageManager {
             exit,
             bam_enabled,
             my_fallback_contact_info,
+            client_mode,
         );
 
         Self { t_hdl }
@@ -120,8 +133,10 @@ impl FetchStageManager {
         packet_intercept_rx: Receiver<PacketBatch>,
         packet_tx: Sender<PacketBatch>,
         exit: Arc<AtomicBool>,
+        #[allow(unused_variables)]
         bam_enabled: Arc<AtomicBool>,
         my_fallback_contact_info: contact_info::ContactInfo,
+        client_mode: Arc<Mutex<ClientMode>>,
     ) -> JoinHandle<()> {
         Builder::new().name("fetch-stage-manager".into()).spawn(move || {
             // Save validator's original TPU addresses for fallback
@@ -130,25 +145,41 @@ impl FetchStageManager {
 
             let mut pending_disconnect_ts = Instant::now();
 
+            // Get config path from environment variable or use default
+            let config_path = Self::get_quic_config_path();
+            info!("Using QUIC config path: {}", config_path.display());
+
+            // Initialize quic config
+            let quic_config = Arc::new(RwLock::new(Self::load_quic_config(&config_path)));
+            let config_path_arc = Arc::new(config_path);
             let heartbeat_tick = tick(HEARTBEAT_TIMEOUT);
             let metrics_tick = tick(METRICS_CADENCE);
+            let config_reload_tick = tick(CONFIG_RELOAD_INTERVAL);
             let mut packets_forwarded = 0;
             let mut heartbeats_received = 0;
             while !exit.load(Ordering::Relaxed) {
                 // BAM override: When BAM is enabled, bypass all normal operation
                 if bam_enabled.load(Ordering::Relaxed) {
-                    state.reset_to_bam_state();
-                    // Drain any queued packets to prevent buildup
-                    while packet_intercept_rx.try_recv().is_ok() {}
-                    std::thread::sleep(Duration::from_millis(100));
-                    continue;
+                    if client_mode.lock().unwrap().clone() == ClientMode::BAMStrictCompliance {
+                        state.reset_to_bam_state();
+                        // Drain any queued packets to prevent buildup
+                        while packet_intercept_rx.try_recv().is_ok() {}
+                        std::thread::sleep(Duration::from_millis(100));
+                        continue;
+                    }
                 }
 
                 select! {
                     recv(packet_intercept_rx) -> pkt => {
                         match pkt {
-                            Ok(pkt) => {
-                                // Only forward packets when fetch stage is "connected"
+                             Ok(mut pkt) => {
+                                let config = quic_config.read().unwrap();
+                                for mut packet in pkt.iter_mut() {
+                                    if Self::is_ip_in_quic_config(packet.meta().socket_addr().ip(), &config) {
+                                        packet.meta_mut().bypass_delay(true);
+                                    }    
+                                }
+                                drop(config); // Release lock before sending
                                 if state.fetch_connected {
                                     if packet_tx.send(pkt).is_err() {
                                         error!("{:?}", ProxyError::PacketForwardError);
@@ -171,8 +202,10 @@ impl FetchStageManager {
                         // If no heartbeat received and we're in a state that needs fallback
                         if state.needs_fallback_reconnect() {
                             if bam_enabled.load(Ordering::Relaxed) {
-                                state.reset_to_bam_state();
-                                continue;
+                                if client_mode.lock().unwrap().clone() == ClientMode::BAMStrictCompliance {
+                                    state.reset_to_bam_state();
+                                    continue;
+                                }                      
                             }
                             warn!("heartbeat late, reconnecting fetch stage");
                             // Switch to "connected" mode (forward packets) and use validator's TPU
@@ -200,8 +233,10 @@ impl FetchStageManager {
                             }
                             if state.should_disconnect_to_relayer(&pending_disconnect_ts) {
                                 if bam_enabled.load(Ordering::Relaxed) {
-                                    state.reset_to_bam_state();
-                                    continue;
+                                    if client_mode.lock().unwrap().clone() == ClientMode::BAMStrictCompliance {
+                                        state.reset_to_bam_state();
+                                        continue;
+                                    }        
                                 }
                                 info!("disconnecting fetch stage");
                                 state.switch_to_disconnected_mode();
@@ -224,6 +259,13 @@ impl FetchStageManager {
                         );
 
                     }
+                    recv(config_reload_tick) -> _ => {
+                        // Reload quic config file
+                        let new_config = Self::load_quic_config(&config_path_arc);
+                        let mut config = quic_config.write().unwrap();
+                        *config = new_config;
+                        debug!("Reloaded quic config file from {}", config_path_arc.display());
+                    }
                 }
             }
         }).unwrap()
@@ -239,7 +281,81 @@ impl FetchStageManager {
         Ok(())
     }
 
+    /// Gets the QUIC config path from environment variable or returns default
+    fn get_quic_config_path() -> PathBuf {
+        env::var(QUIC_CONFIG_PATH_ENV)
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(DEFAULT_QUIC_CONFIG_PATH))
+    }
+
+    /// Loads quic_config.json file
+    fn load_quic_config(config_path: &Path) -> HashSet<IpAddr> {
+        if !config_path.exists() {
+            warn!(
+                "Config file {} not found",
+                config_path.display()
+            );
+            return HashSet::new();
+        }
+
+        match File::open(config_path) {
+            Ok(mut file) => {
+                let mut contents = String::new();
+                match file.read_to_string(&mut contents) {
+                    Ok(_) => {
+                        match serde_json::from_str::<QuicConfig>(&contents) {
+                            Ok(config_json) => {
+                                let total_ips = config_json.quic_config.len();
+                                let mut config = HashSet::new();
+                                for ip_str in &config_json.quic_config {
+                                    match ip_str.parse::<IpAddr>() {
+                                        Ok(ip) => {
+                                            config.insert(ip);
+                                        }
+                                        Err(e) => {
+                                            warn!("Failed to parse IP address '{}': {}", ip_str, e);
+                                        }
+                                    }
+                                }
+                                if config.is_empty() && total_ips > 0 {
+                                    warn!("No valid IP addresses found in config file {}", config_path.display());
+                                } else {
+                                    info!("Loaded {} IP addresses from config file {}", config.len(), config_path.display());
+                                }
+                                config
+                            }
+                            Err(e) => {
+                                warn!("Failed to parse config file {}: {}", config_path.display(), e);
+                                HashSet::new()
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to read config file {}: {}", config_path.display(), e);
+                        HashSet::new()
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Failed to open config file {}: {}", config_path.display(), e);
+                HashSet::new()
+            }
+        }
+    }
+
+    /// Checks if an IP address is in the quic config 
+    fn is_ip_in_quic_config(ip: IpAddr, config: &HashSet<IpAddr>) -> bool {
+        config.contains(&ip)
+    }
+
     pub fn join(self) -> thread::Result<()> {
         self.t_hdl.join()
     }
 }
+
+/// Configuration structure for quic_config.json
+#[derive(Deserialize)]
+struct QuicConfig {
+    quic_config: Vec<String>,
+}
+

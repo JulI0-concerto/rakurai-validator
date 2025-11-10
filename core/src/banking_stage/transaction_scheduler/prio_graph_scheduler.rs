@@ -1,5 +1,8 @@
+use std::num::Saturating;
+
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
+
 use {
     super::{
         scheduler::{PreLockFilterAction, Scheduler, SchedulingSummary},
@@ -25,7 +28,6 @@ use {
     solana_pubkey::Pubkey,
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
     solana_svm_transaction::svm_message::SVMMessage,
-    std::num::Saturating,
 };
 
 #[inline(always)]
@@ -343,6 +345,16 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
 
     fn scheduling_common_mut(&mut self) -> &mut SchedulingCommon<Tx> {
         &mut self.common
+    }
+
+    // returns if txns are in flight
+    fn in_flight_txns(&mut self) -> bool {
+        !self
+            .scheduling_common_mut()
+            .in_flight_tracker
+            .num_in_flight_per_thread()
+            .iter()
+            .all(|txns_count| *txns_count == 0)
     }
 }
 
