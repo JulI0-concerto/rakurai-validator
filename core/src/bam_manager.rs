@@ -1,3 +1,4 @@
+use crate::validator::ClientMode;
 /// Facilitates the BAM sub-system in the validator:
 /// - Tries to connect to BAM
 /// - Sends leader state to BAM
@@ -12,6 +13,7 @@ use std::{
         Arc, Mutex, RwLock,
     },
 };
+
 use {
     crate::{
         admin_rpc_post_init::{KeyUpdaterType, KeyUpdaters},
@@ -19,6 +21,7 @@ use {
             BamConnection, MAX_DURATION_BETWEEN_NODE_HEARTBEATS, WAIT_TO_RECONNECT_DURATION,
         },
         bam_dependencies::BamDependencies,
+        banking_trace::BankingPacketSender,
         proxy::block_engine_stage::BlockBuilderFeeInfo,
     },
     jito_protos::proto::{
@@ -77,6 +80,8 @@ impl BamManager {
         dependencies: BamDependencies,
         poh_recorder: Arc<RwLock<PohRecorder>>,
         identity_notifiers: Arc<RwLock<KeyUpdaters>>,
+        non_vote_sender: BankingPacketSender,
+        client_mode: Arc<Mutex<ClientMode>>,
     ) -> Self {
         Self {
             thread: std::thread::spawn(move || {
@@ -86,6 +91,8 @@ impl BamManager {
                     dependencies,
                     poh_recorder,
                     identity_notifiers,
+                    non_vote_sender,
+                    client_mode,
                 )
             }),
         }
@@ -97,6 +104,8 @@ impl BamManager {
         dependencies: BamDependencies,
         poh_recorder: Arc<RwLock<PohRecorder>>,
         identity_notifiers: Arc<RwLock<KeyUpdaters>>,
+        non_vote_sender: BankingPacketSender,
+        client_mode: Arc<Mutex<ClientMode>>,
     ) {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(8)
@@ -121,6 +130,7 @@ impl BamManager {
         identity_notifiers.add(KeyUpdaterType::BamConnection, identity_updater);
         drop(identity_notifiers);
         info!("BAM Manager: Added BAM connection key updater");
+        let mut prev_client_mode = client_mode.lock().unwrap().clone();
 
         while !exit.load(Ordering::Relaxed) {
             // Update if bam is enabled
@@ -129,42 +139,60 @@ impl BamManager {
                 Ordering::Relaxed,
             );
 
-            // If no connection then try to create a new one
-            if current_connection.is_none() {
-                let url = bam_url.lock().unwrap().clone();
-                if let Some(url) = url {
-                    let result = runtime.block_on(BamConnection::try_init(
-                        url,
-                        dependencies.cluster_info.clone(),
-                        dependencies.batch_sender.clone(),
-                        dependencies.outbound_receiver.clone(),
-                    ));
-                    match result {
-                        Ok(connection) => {
-                            current_connection = Some(connection);
-                            info!("BAM connection established");
+            if prev_client_mode != client_mode.lock().unwrap().clone() {
+                prev_client_mode = client_mode.lock().unwrap().clone();
+                current_connection = None;
+                cached_builder_config = None;
+                dependencies.bam_enabled.store(
+                    current_connection.is_some() && cached_builder_config.is_some(),
+                    Ordering::Relaxed,
+                );
+                std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
+                continue;
+            }
 
-                            // Wait until connection is healthy
-                            if !current_connection
-                                .as_ref()
-                                .unwrap()
-                                .wait_until_healthy_and_config_received(
-                                    MAX_DURATION_BETWEEN_NODE_HEARTBEATS,
-                                )
-                            {
-                                warn!("BAM connection not healthy after waiting for {:?}, disconnecting and will retry",
+            if client_mode.lock().unwrap().clone() != ClientMode::RakuraiJito {
+                // If no connection then try to create a new one
+                if current_connection.is_none() {
+                    let url = bam_url.lock().unwrap().clone();
+                    if let Some(url) = url {
+                        let result = runtime.block_on(BamConnection::try_init(
+                            url,
+                            dependencies.cluster_info.clone(),
+                            dependencies.batch_sender.clone(),
+                            dependencies.outbound_receiver.clone(),
+                            non_vote_sender.clone(),
+                        ));
+                        match result {
+                            Ok(connection) => {
+                                current_connection = Some(connection);
+                                info!("BAM connection established");
+
+                                // Wait until connection is healthy
+                                if !current_connection
+                                    .as_ref()
+                                    .unwrap()
+                                    .wait_until_healthy_and_config_received(
+                                        MAX_DURATION_BETWEEN_NODE_HEARTBEATS,
+                                    )
+                                {
+                                    warn!("BAM connection not healthy after waiting for {:?}, disconnecting and will retry",
                                     MAX_DURATION_BETWEEN_NODE_HEARTBEATS);
-                                current_connection = None;
-                                cached_builder_config = None;
-                                std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
-                                continue;
+                                    current_connection = None;
+                                    cached_builder_config = None;
+                                    std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
+                                    continue;
+                                }
                             }
-                        }
-                        Err(e) => {
-                            error!("Failed to connect to BAM: {}", e);
+                            Err(e) => {
+                                error!("Failed to connect to BAM: {}", e);
+                            }
                         }
                     }
                 }
+            } else {
+                current_connection = None;
+                cached_builder_config = None;
             }
 
             let Some(connection) = current_connection.as_mut() else {
@@ -205,7 +233,9 @@ impl BamManager {
             // Check if block builder info has changed
             if let Some(builder_config) = connection.get_latest_config() {
                 if Some(&builder_config) != cached_builder_config.as_ref() {
-                    Self::update_tpu_config(Some(&builder_config), &dependencies.cluster_info);
+                    if client_mode.lock().unwrap().clone() == ClientMode::BAMStrictCompliance {
+                        Self::update_tpu_config(Some(&builder_config), &dependencies.cluster_info);
+                    }
                     Self::update_block_engine_key_and_commission(
                         Some(&builder_config),
                         &dependencies.block_builder_fee_info,

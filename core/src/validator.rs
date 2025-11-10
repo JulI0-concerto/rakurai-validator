@@ -1,6 +1,8 @@
 //! The `validator` module hosts all the validator microservices.
 
+use crate::banking_stage::reward_distributor::RewardDistributionConfig;
 pub use solana_perf::report_target_features;
+
 use {
     crate::{
         admin_rpc_post_init::{AdminRpcRequestMetadataPostInit, KeyUpdaterType, KeyUpdaters},
@@ -171,6 +173,35 @@ const WAIT_FOR_WEN_RESTART_SUPERMAJORITY_THRESHOLD_PERCENT: u64 =
     WAIT_FOR_SUPERMAJORITY_THRESHOLD_PERCENT;
 
 #[derive(
+    Default,
+    Clone,
+    EnumString,
+    EnumVariantNames,
+    IntoStaticStr,
+    Display,
+    EnumIter,
+    PartialEq,
+    Eq,
+    Copy,
+)]
+#[strum(serialize_all = "kebab-case")]
+pub enum ClientMode {
+    #[default]
+    RakuraiJito,
+    BAMStrictCompliance,
+    RakuraiBAM,
+}
+
+impl ClientMode {
+    pub const fn cli_names() -> &'static [&'static str] {
+        Self::VARIANTS
+    }
+
+    pub fn cli_message() -> &'static str {
+        "Select the client mode for validator"
+    }
+}
+#[derive(
     Clone, EnumCount, EnumIter, EnumString, EnumVariantNames, Default, IntoStaticStr, Display,
 )]
 #[strum(serialize_all = "kebab-case")]
@@ -316,6 +347,12 @@ pub struct ValidatorConfig {
     pub tip_manager_config: TipManagerConfig,
     pub preallocated_bundle_cost: u64,
     pub bam_url: Arc<Mutex<Option<String>>>,
+    pub reward_distribution_config: RewardDistributionConfig,
+    pub banking_packet_delay_ms: u64,
+    pub target_slot_adjustment_ms: u64,
+    pub tx_io_check: Option<String>,
+    pub oms_connector: bool,
+    pub client_mode: Arc<Mutex<ClientMode>>,
 }
 
 impl ValidatorConfig {
@@ -404,6 +441,12 @@ impl ValidatorConfig {
             tip_manager_config: TipManagerConfig::default(),
             preallocated_bundle_cost: 0,
             bam_url: Arc::new(Mutex::new(None)),
+            reward_distribution_config: RewardDistributionConfig::default(),
+            banking_packet_delay_ms: 200,
+            target_slot_adjustment_ms: 10,
+            tx_io_check: None,
+            oms_connector: false,
+            client_mode: Arc::new(Mutex::new(ClientMode::default())),
         }
     }
 
@@ -954,6 +997,7 @@ impl Validator {
                 &leader_schedule_cache,
                 &genesis_config.poh_config,
                 exit.clone(),
+                config.target_slot_adjustment_ms * 1_000_000,
             )
         };
         if transaction_status_sender.is_some() {
@@ -1383,6 +1427,7 @@ impl Validator {
             config.poh_pinned_cpu_core,
             config.poh_hashes_per_batch,
             record_receiver,
+            config.target_slot_adjustment_ms * 1_000_000,
         );
         assert_eq!(
             blockstore.get_new_shred_signals_len(),
@@ -1707,6 +1752,11 @@ impl Validator {
             config.shred_receiver_address.clone(),
             config.preallocated_bundle_cost,
             config.bam_url.clone(),
+            config.reward_distribution_config.clone(),
+            config.banking_packet_delay_ms,
+            config.tx_io_check.clone(),
+            config.oms_connector,
+            config.client_mode.clone(),
         );
 
         datapoint_info!(
