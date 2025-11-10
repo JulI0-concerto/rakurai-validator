@@ -2,6 +2,7 @@
 //! and buffers from into the the `TransactionStateContainer`. Key thing to note:
 //! this implementation only functions during the `Consume/Hold` phase; otherwise it will send them back
 //! to BAM with a `Retryable` result.
+use crate::banking_stage::DecisionState;
 use crate::banking_stage::scheduler_messages::MaxAge;
 use crate::banking_stage::transaction_scheduler::receive_and_buffer::DisconnectedError;
 use crate::banking_stage::transaction_scheduler::transaction_state_container::StateContainer;
@@ -54,6 +55,7 @@ use {
         runtime_transaction::RuntimeTransaction, transaction_meta::StaticMeta,
     },
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
+    agave_banking_stage_ingress_types::BankingPacketReceiver,
 };
 
 type PrevalidationResult = Result<(AtomicTxnBatch, bool, u32, u64), (Reason, u32)>;
@@ -706,7 +708,8 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
     fn receive_and_buffer_packets(
         &mut self,
         container: &mut Self::Container,
-        decision: &BufferedPacketsDecision,
+        decision: Option<&BufferedPacketsDecision>,
+        _decision_state: Option<&DecisionState>,
     ) -> Result<ReceivingStats, DisconnectedError> {
         let is_bam_enabled = self.bam_enabled.load(Ordering::Relaxed);
 
@@ -716,6 +719,10 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
             stats.accumulate(batch_stats);
         }
 
+        let Some(decision) = decision else {
+            return Ok(stats);
+        };
+        
         match decision {
             BufferedPacketsDecision::Consume(_) | BufferedPacketsDecision::Hold => loop {
                 let batch = match self.parsed_batch_receiver.try_recv() {
@@ -786,6 +793,14 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
         }
 
         Ok(stats)
+    }
+    fn packet_receiver(&self) -> BankingPacketReceiver {
+        let (_sender, receiver) = crossbeam_channel::unbounded();
+        receiver
+    }
+
+    fn skip_wait(&mut self) -> Option<&mut bool> {
+        None
     }
 }
 
