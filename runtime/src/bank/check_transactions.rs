@@ -160,7 +160,7 @@ impl Bank {
         CheckedTransactionDetails::new(nonce, compute_budget_and_limits)
     }
 
-    fn check_transaction_age(
+    pub fn check_transaction_age(
         &self,
         tx: &impl SVMMessage,
         max_age: usize,

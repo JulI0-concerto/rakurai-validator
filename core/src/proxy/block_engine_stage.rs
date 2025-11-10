@@ -130,6 +130,7 @@ impl BlockEngineStage {
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
         bam_enabled: Arc<AtomicBool>,
+        input_tx_signature_sender: Option<(Sender<String>, Arc<AtomicBool>)>,
     ) -> Self {
         let block_builder_fee_info = block_builder_fee_info.clone();
 
@@ -150,6 +151,7 @@ impl BlockEngineStage {
                     block_builder_fee_info,
                     shredstream_receiver_address,
                     bam_enabled,
+                    &input_tx_signature_sender,
                 ));
             })
             .unwrap();
@@ -177,6 +179,7 @@ impl BlockEngineStage {
         block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
         bam_enabled: Arc<AtomicBool>,
+        input_tx_signature_sender: &Option<(Sender<String>, Arc<AtomicBool>)>,
     ) {
         let mut error_count: u64 = 0;
 
@@ -202,6 +205,7 @@ impl BlockEngineStage {
                 &shredstream_receiver_address,
                 &local_block_engine_config,
                 &bam_enabled,
+                input_tx_signature_sender,
             )
             .await
             {
@@ -238,6 +242,7 @@ impl BlockEngineStage {
         shredstream_receiver_address: &Arc<ArcSwap<Option<SocketAddr>>>,
         local_block_engine_config: &BlockEngineConfig,
         bam_enabled: &Arc<AtomicBool>,
+        input_tx_signature_sender: &Option<(Sender<String>, Arc<AtomicBool>)>,
     ) -> crate::proxy::Result<()> {
         if bam_enabled.load(Ordering::Relaxed) {
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -263,6 +268,7 @@ impl BlockEngineStage {
                 block_builder_fee_info,
                 shredstream_receiver_address,
                 bam_enabled,
+                input_tx_signature_sender,
             )
             .await;
         }
@@ -296,6 +302,7 @@ impl BlockEngineStage {
             block_builder_fee_info,
             &Self::CONNECTION_TIMEOUT,
             bam_enabled,
+            input_tx_signature_sender,
         )
         .await
         .inspect(|_| {
@@ -321,6 +328,7 @@ impl BlockEngineStage {
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: &Arc<ArcSwap<Option<SocketAddr>>>,
         bam_enabled: &Arc<AtomicBool>,
+        input_tx_signature_sender: &Option<(Sender<String>, Arc<AtomicBool>)>,
     ) -> crate::proxy::Result<()> {
         let candidates = Self::get_ranked_endpoints(&endpoint).await?;
 
@@ -357,6 +365,7 @@ impl BlockEngineStage {
                 block_builder_fee_info,
                 &Self::CONNECTION_TIMEOUT,
                 bam_enabled,
+                input_tx_signature_sender,
             )
             .await
             {
@@ -476,6 +485,7 @@ impl BlockEngineStage {
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         connection_timeout: &Duration,
         bam_enabled: &Arc<AtomicBool>,
+        input_tx_signature_sender: &Option<(Sender<String>, Arc<AtomicBool>)>,
     ) -> crate::proxy::Result<()> {
         // Get a copy of configs here in case they have changed at runtime
         let keypair = cluster_info.keypair().clone();
@@ -538,6 +548,7 @@ impl BlockEngineStage {
             cluster_info,
             &backend_url,
             bam_enabled,
+            input_tx_signature_sender,
         )
         .await
     }
@@ -721,6 +732,7 @@ impl BlockEngineStage {
         cluster_info: &Arc<ClusterInfo>,
         block_engine_url: &str,
         bam_enabled: &Arc<AtomicBool>,
+        input_tx_signature_sender: &Option<(Sender<String>, Arc<AtomicBool>)>,
     ) -> crate::proxy::Result<()> {
         let subscribe_packets_stream = timeout(
             *connection_timeout,
@@ -780,6 +792,7 @@ impl BlockEngineStage {
             connection_timeout,
             block_engine_url,
             bam_enabled,
+            input_tx_signature_sender,
         )
         .await
     }
@@ -805,7 +818,9 @@ impl BlockEngineStage {
         cluster_info: &Arc<ClusterInfo>,
         connection_timeout: &Duration,
         block_engine_url: &str,
+        #[allow(unused_variables)]
         bam_enabled: &Arc<AtomicBool>,
+        input_tx_signature_sender: &Option<(Sender<String>, Arc<AtomicBool>)>,
     ) -> crate::proxy::Result<()> {
         const METRICS_TICK: Duration = Duration::from_secs(1);
         const MAINTENANCE_TICK: Duration = Duration::from_secs(10 * 60);
@@ -828,7 +843,7 @@ impl BlockEngineStage {
             tokio::select! {
                 maybe_msg = packet_stream.message() => {
                     let resp = maybe_msg?.ok_or(ProxyError::GrpcStreamDisconnected)?;
-                    Self::handle_block_engine_packets(resp, packet_tx, banking_packet_sender, local_config.trust_packets, &mut block_engine_stats)?;
+                    Self::handle_block_engine_packets(resp, packet_tx, banking_packet_sender, local_config.trust_packets, &mut block_engine_stats, input_tx_signature_sender)?;
                 }
                 maybe_bundles = bundle_stream.message() => {
                     Self::handle_block_engine_maybe_bundles(maybe_bundles, bundle_tx, &mut block_engine_stats)?;
@@ -910,6 +925,7 @@ impl BlockEngineStage {
             .bundles
             .into_iter()
             .filter_map(|bundle| {
+                info!("Block Engine Bundle Received, ID: {:?}", bundle.uuid);
                 Some(PacketBundle::new(
                     PacketBatch::from(
                         bundle
@@ -945,6 +961,7 @@ impl BlockEngineStage {
         banking_packet_sender: &BankingPacketSender,
         trust_packets: bool,
         block_engine_stats: &mut BlockEngineStageStats,
+        input_tx_signature_sender: &Option<(Sender<String>, Arc<AtomicBool>)>,
     ) -> crate::proxy::Result<()> {
         if let Some(batch) = resp.batch {
             if batch.packets.is_empty() {
@@ -966,7 +983,7 @@ impl BlockEngineStage {
 
             if trust_packets {
                 banking_packet_sender
-                    .send(Arc::new(vec![packet_batch]))
+                    .send(Arc::new(vec![packet_batch]), input_tx_signature_sender)
                     .map_err(|_| ProxyError::PacketForwardError)?;
             } else {
                 packet_tx
