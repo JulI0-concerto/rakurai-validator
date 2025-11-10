@@ -1,6 +1,7 @@
 use {
     super::BundleStageLoopMetrics,
     crate::{
+        banking_trace::BankingPacketSender,
         bundle_stage::{
             bundle_packet_deserializer::{BundlePacketDeserializer, ReceiveBundleResults},
             bundle_stage_leader_metrics::BundleStageLeaderMetrics,
@@ -41,12 +42,17 @@ impl BundleReceiver {
         bundle_storage: &mut BundleStorage,
         bundle_stage_metrics: &mut BundleStageLoopMetrics,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
+        non_vote_sender: BankingPacketSender,
     ) -> Result<(), RecvTimeoutError> {
         let (result, recv_time_us) = measure_us!({
             let recv_timeout = Self::get_receive_timeout(bundle_storage);
             let mut recv_and_buffer_measure = Measure::start("recv_and_buffer");
             self.bundle_packet_deserializer
-                .receive_bundles(recv_timeout, bundle_storage.max_receive_size())
+                .receive_bundles(
+                    non_vote_sender,
+                    recv_timeout,
+                    bundle_storage.max_receive_size(),
+                )
                 // Consumes results if Ok, otherwise we keep the Err
                 .map(|receive_bundle_results| {
                     self.buffer_bundles(

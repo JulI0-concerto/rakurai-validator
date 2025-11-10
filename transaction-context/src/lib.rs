@@ -107,6 +107,7 @@ impl InstructionAccount {
 pub type TransactionAccount = (Pubkey, AccountSharedData);
 
 #[derive(Debug)]
+#[repr(C)]
 pub struct TransactionAccounts {
     accounts: Vec<RefCell<AccountSharedData>>,
     touched_flags: RefCell<Box<[bool]>>,
@@ -209,6 +210,8 @@ impl TransactionAccounts {
 ///
 /// This context is valid for the entire duration of a transaction being processed.
 #[derive(Debug)]
+#[repr(C)]
+
 pub struct TransactionContext {
     account_keys: Pin<Box<[Pubkey]>>,
     accounts: Rc<TransactionAccounts>,
@@ -586,6 +589,7 @@ impl TransactionContext {
     derive(serde_derive::Deserialize, serde_derive::Serialize)
 )]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
 pub struct TransactionReturnData {
     pub program_id: Pubkey,
     pub data: Vec<u8>,
@@ -593,6 +597,7 @@ pub struct TransactionReturnData {
 
 /// Instruction shared between runtime and programs.
 #[derive(Debug, Clone, Default)]
+#[repr(C)]
 pub struct InstructionFrame {
     nesting_level: usize,
     program_account_index_in_tx: IndexOfAccount,
